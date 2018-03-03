@@ -21,6 +21,8 @@
 
 char PORTS[PROC_COUNT][16];
 char IP[PROC_COUNT][16];
+int socketdrive[PROC_COUNT];
+int process_id;
 
 void sigchld_handler(int s)
 {
@@ -33,25 +35,6 @@ void *get_in_addr(struct sockaddr *sa)
 		return &(((struct sockaddr_in*)sa)->sin_addr);
 	}
 	return &(((struct sockaddr_in6*)sa)->sin6_addr);
-}
-
-void *do_chld(void *arg)
-{
-	int mysocfd = (int) arg;
-	
-	int i;
-
-	//  read from the given socket 
-	// read(mysocfd, data, 40);
-	if (send(mysocfd, "Hello, world!", 13, 0) == -1)
-				perror("send");
-
-	/* simulate some processing */
-	for (i=0;i<1000000;i++);
-
-	/* close the socket and exit this thread */
-	close(mysocfd);
-	pthread_exit((void *)0);
 }
 
 void read_configure()
@@ -92,15 +75,79 @@ int getServer(struct addrinfo* servinfo, struct addrinfo* *p){
 
 	return sockfd;
 }
+void *setupConnection(void* arg)
+{
+	struct addrinfo hints, *servinfo, *p;
+	int rv;
+	int sockfd;
+	int dest = (int) arg;
+	memset(&hints, 0, sizeof hints);
+	hints.ai_family = AF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
 
-// void unicast_send(int dest, char* message){
+	if ((rv = getaddrinfo(IP[dest], PORTS[dest], &hints, &servinfo)) != 0) {
+		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
+		pthread_exit((void *)0);
+	}
 
-// }
+	sleep(10);
+	sockfd = getServer(servinfo, &p);
+	if(p == NULL){
+		fprintf(stderr, "client: fail to connect\n");
+		pthread_exit((void *)0);
+	}
+	socketdrive[dest] = sockfd;
+	freeaddrinfo(servinfo);
+	pthread_exit((void *)0);
 
-// void unicast_receive(int source, char*message){
+}
 
-// }
+void unicast_send(int dest, char* message){
+	char casted_message[strlen(message)+1];
 
+	sprintf(casted_message,"%d",process_id);
+	strcpy(&(casted_message[1]), message);
+
+	if(send(socketdrive[dest], casted_message, strlen(casted_message),0)== -1) perror("send");
+	printf("Sent %s to process %d, system time is ­­­­­­­­­­­­­\n", message, dest);
+
+}
+
+void unicast_receive(int source, char*message){
+	if(source != process_id)
+		printf("Received %s from source %d, system time is ­­­­­­­­­­­­­\n", 
+			message, source);
+}
+
+void *do_chld(void *arg)
+{
+	int mysocfd = (int) arg;
+	char message[MAX_DATA_SIZE];
+	int i;
+	int source;
+	int numbytes;
+	//  read from the given socket 
+	// read(mysocfd, data, 40);
+	// if (send(mysocfd, "Hello, world!", 13, 0) == -1)
+	// 			perror("send");
+	unicast_send(2, "Hello");
+	
+	if((numbytes = recv(mysocfd, message, MAX_DATA_SIZE-1, 0)) == -1){
+				perror("recv");
+				exit(1);
+	}
+
+
+	/* simulate some processing */
+	for (i=0;i<1000000;i++);
+
+	if(numbytes > 0)
+		unicast_receive((int)message[0]-48,&message[1]);
+
+	/* close the socket and exit this thread */
+	close(mysocfd);
+	pthread_exit((void *)0);
+}
 
 
 int main(int argc, char const *argv[]){
@@ -114,9 +161,10 @@ int main(int argc, char const *argv[]){
 	struct sockaddr_storage their_addr;
 	int numbytes;
 	char buf[MAX_DATA_SIZE];
-	pthread_t chld_thr;
+	pthread_t chld_thr, chld_thr1, chld_thr2, chld_thr3;
+	pthread_t *tid = malloc( PROC_COUNT* sizeof(pthread_t) );
 	char s[INET6_ADDRSTRLEN];
-	
+	int i;
 
 	if(argc != 2){
 		fprintf(stderr, "usage: server portnumber\n");
@@ -129,8 +177,9 @@ int main(int argc, char const *argv[]){
 
 	//read-in configure file here
 	read_configure();
+	process_id = (int)(*argv[1])-48;
 
-	if((rv = getaddrinfo(NULL, PORTS[(int)(*argv[1])-48], &hints, &servinfo)) != 0){
+	if((rv = getaddrinfo(NULL, PORTS[process_id], &hints, &servinfo)) != 0){
 		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
 		return 1;
 	}
@@ -182,6 +231,13 @@ int main(int argc, char const *argv[]){
 
 	printf("server: waiting for connections....\n");
 
+	for(i = 0; i < PROC_COUNT;i++){
+		pthread_create(&tid[i], NULL, setupConnection,(void*)i);
+	}
+	for(i = 0; i < PROC_COUNT; i++){
+		pthread_join( tid[i], NULL );
+	}
+
 	while(1){
 		sin_size = sizeof their_addr;
 		new_fd = accept(sockfd, (struct sockaddr *)&their_addr, &sin_size);
@@ -194,9 +250,14 @@ int main(int argc, char const *argv[]){
 			get_in_addr((struct sockaddr *)&their_addr),
 			s, sizeof s);
 		printf("server: got connection from %s\n", s);
-
 		/* create a new thread to process the incomming request */
 		pthread_create(&chld_thr, NULL, do_chld, (void *)new_fd);
+		pthread_join(chld_thr, NULL);
+
+	}
+
+	for(i = 0; i < PROC_COUNT; i++){
+		free(tid[i]);
 	}
 
 	return 0;
