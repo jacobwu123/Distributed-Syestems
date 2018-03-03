@@ -11,6 +11,8 @@
 #include <sys/wait.h>
 #include <signal.h>
 #include <pthread.h>
+#include <time.h>
+
 
 #define BACKLOG 10
 #define MAX_DATA_SIZE 1024 
@@ -23,6 +25,7 @@ char PORTS[PROC_COUNT][16];
 char IP[PROC_COUNT][16];
 int socketdrive[PROC_COUNT];
 int process_id;
+int delay;
 
 void sigchld_handler(int s)
 {
@@ -37,12 +40,19 @@ void *get_in_addr(struct sockaddr *sa)
 	return &(((struct sockaddr_in6*)sa)->sin6_addr);
 }
 
+void setup_delay(int min_delay, int max_delay){
+		// setting up delay 
+	srand(time(NULL));
+	delay = rand()%(max_delay - min_delay) + min_delay;
+}
+
 void read_configure()
 {
 	char * line = NULL;
 	size_t len = 0;
 	FILE *fp = fopen (FILE_NAME, "r");
 	int i = 0;
+	int min_delay, max_delay;
 	if(fp!= NULL){
 		while(i < 4){
 			fscanf(fp, "%s %s", IP[i], PORTS[i]);
@@ -50,10 +60,13 @@ void read_configure()
 			printf("PORT:%s\n", PORTS[i]);
 			i++;
 		}
+		fscanf(fp, "%d %d", &min_delay, &max_delay);
+		printf("min_delay:%d\n",min_delay);
+		printf("max_delay:%d\n", max_delay);
 		printf("read config file successfully.\n");
 		fclose(fp);
 	}
-
+	setup_delay(min_delay, max_delay);
 }
 
 int getServer(struct addrinfo* servinfo, struct addrinfo* *p){
@@ -75,6 +88,7 @@ int getServer(struct addrinfo* servinfo, struct addrinfo* *p){
 
 	return sockfd;
 }
+
 void *setupConnection(void* arg)
 {
 	struct addrinfo hints, *servinfo, *p;
@@ -90,7 +104,7 @@ void *setupConnection(void* arg)
 		pthread_exit((void *)0);
 	}
 
-	sleep(10);
+	sleep(10);//wait for other processes to open
 	sockfd = getServer(servinfo, &p);
 	if(p == NULL){
 		fprintf(stderr, "client: fail to connect\n");
@@ -114,9 +128,24 @@ void unicast_send(int dest, char* message){
 }
 
 void unicast_receive(int source, char*message){
+
 	if(source != process_id)
 		printf("Received %s from source %d, system time is ­­­­­­­­­­­­­\n", 
 			message, source);
+}
+
+void *send_message(void *arg){
+	char command[16];
+	int dest;
+	char message[512];
+
+	while(scanf("%s %d %s", command, &dest, message) > 0){
+		if(strcmp(command, "send") == 0)
+			unicast_send(dest, message);
+		else if(strcmp(command, "quit") == 0)
+			break;
+	}
+	pthread_exit((void *)0);
 }
 
 void *do_chld(void *arg)
@@ -126,17 +155,16 @@ void *do_chld(void *arg)
 	int i;
 	int source;
 	int numbytes;
-	//  read from the given socket 
-	// read(mysocfd, data, 40);
-	// if (send(mysocfd, "Hello, world!", 13, 0) == -1)
-	// 			perror("send");
-	unicast_send(2, "Hello");
-	
+	char act[10];
+	int dest;
+	pthread_t chld_thr;
+
+	pthread_create(&chld_thr, NULL, send_message, NULL);
+
 	if((numbytes = recv(mysocfd, message, MAX_DATA_SIZE-1, 0)) == -1){
 				perror("recv");
 				exit(1);
 	}
-
 
 	/* simulate some processing */
 	for (i=0;i<1000000;i++);
@@ -161,7 +189,7 @@ int main(int argc, char const *argv[]){
 	struct sockaddr_storage their_addr;
 	int numbytes;
 	char buf[MAX_DATA_SIZE];
-	pthread_t chld_thr, chld_thr1, chld_thr2, chld_thr3;
+	pthread_t chld_thr;
 	pthread_t *tid = malloc( PROC_COUNT* sizeof(pthread_t) );
 	char s[INET6_ADDRSTRLEN];
 	int i;
@@ -169,6 +197,7 @@ int main(int argc, char const *argv[]){
 	if(argc != 2){
 		fprintf(stderr, "usage: server portnumber\n");
 	}
+
 
 	memset(&hints, 0, sizeof hints);
 	hints.ai_family = AF_UNSPEC;
@@ -252,7 +281,7 @@ int main(int argc, char const *argv[]){
 		printf("server: got connection from %s\n", s);
 		/* create a new thread to process the incomming request */
 		pthread_create(&chld_thr, NULL, do_chld, (void *)new_fd);
-		pthread_join(chld_thr, NULL);
+		//pthread_join(chld_thr, NULL);
 
 	}
 
