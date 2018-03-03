@@ -25,7 +25,9 @@ char PORTS[PROC_COUNT][16];
 char IP[PROC_COUNT][16];
 int socketdrive[PROC_COUNT];
 int process_id;
-int delay;
+int delay[PROC_COUNT][PROC_COUNT];
+int sys_time = 0;
+pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void sigchld_handler(int s)
 {
@@ -41,9 +43,17 @@ void *get_in_addr(struct sockaddr *sa)
 }
 
 void setup_delay(int min_delay, int max_delay){
+	int i,j;
 		// setting up delay 
 	srand(time(NULL));
-	delay = rand()%(max_delay - min_delay) + min_delay;
+	while(i < PROC_COUNT){
+		delay[i][i] = 0;
+		for(j = i+1; j < PROC_COUNT; j++){
+			delay[i][j] = rand()%(max_delay - min_delay) + min_delay;
+			delay[j][i] = delay[i][j];
+		}
+		i ++;
+	}
 }
 
 void read_configure()
@@ -54,16 +64,19 @@ void read_configure()
 	int i = 0;
 	int min_delay, max_delay;
 	if(fp!= NULL){
+		printf("Setting up configuration...\n");
+
+		fscanf(fp, "%d %d", &min_delay, &max_delay);
+		printf("min_delay:%d, max_delay:%d\n",min_delay, max_delay);
+
 		while(i < 4){
 			fscanf(fp, "%s %s", IP[i], PORTS[i]);
-			printf("IP:%s\n",IP[i]);
+			printf("Process %d: IP:%s, ",i,IP[i]);
 			printf("PORT:%s\n", PORTS[i]);
 			i++;
 		}
-		fscanf(fp, "%d %d", &min_delay, &max_delay);
-		printf("min_delay:%d\n",min_delay);
-		printf("max_delay:%d\n", max_delay);
-		printf("read config file successfully.\n");
+
+		printf("Setting up configuration successfully.\n");
 		fclose(fp);
 	}
 	setup_delay(min_delay, max_delay);
@@ -116,28 +129,44 @@ void *setupConnection(void* arg)
 
 }
 
+// static void alarmHandler(int signo){
+//     printf("Alarm signal sent!\n");
+// }
+
 void unicast_send(int dest, char* message){
 	char casted_message[strlen(message)+1];
+
+	// alarm(delay[process_id][dest]);
+	// signal(SIGALRM, alarmHandler);
 
 	sprintf(casted_message,"%d",process_id);
 	strcpy(&(casted_message[1]), message);
 
-	if(send(socketdrive[dest], casted_message, strlen(casted_message),0)== -1) perror("send");
-	printf("Sent %s to process %d, system time is ­­­­­­­­­­­­­\n", message, dest);
-
+	if(send(socketdrive[dest], casted_message, strlen(casted_message),0)== -1) 
+		perror("send");
+	
+	pthread_mutex_lock(&mutex);
+	printf("Sent \"%s\" to process %d, system time is ­­­­­­­­­­­­ %d\n", message, dest, sys_time);
+	sys_time += delay[process_id][dest];
+	pthread_mutex_unlock(&mutex);
 }
 
 void unicast_receive(int source, char*message){
-
+	
+	pthread_mutex_lock(&mutex);
+	sys_time += delay[source][process_id];
 	if(source != process_id)
-		printf("Received %s from source %d, system time is ­­­­­­­­­­­­­\n", 
-			message, source);
+		printf("Received \"%s\" from process %d, system time is ­­­­­­­­­­­­­%d\n", 
+			message, source, sys_time);
+	pthread_mutex_unlock(&mutex);
 }
 
 void *send_message(void *arg){
 	char command[16];
 	int dest;
 	char message[512];
+	
+	
 
 	while(scanf("%s %d %s", command, &dest, message) > 0){
 		if(strcmp(command, "send") == 0)
@@ -281,8 +310,6 @@ int main(int argc, char const *argv[]){
 		printf("server: got connection from %s\n", s);
 		/* create a new thread to process the incomming request */
 		pthread_create(&chld_thr, NULL, do_chld, (void *)new_fd);
-		//pthread_join(chld_thr, NULL);
-
 	}
 
 	for(i = 0; i < PROC_COUNT; i++){
