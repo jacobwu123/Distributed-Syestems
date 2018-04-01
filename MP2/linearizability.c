@@ -21,7 +21,6 @@
 #define TTLMSGNUM 50
 
 //define global variables 
-
 char* holdBack[TTLMSGNUM];
 int CurMsgNum = 0;
 int numDelivered = 0;
@@ -35,6 +34,8 @@ int delay[PROC_COUNT][PROC_COUNT];
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 volatile int send_flag = 0;
 char multi_message[512];
+
+int keys[26];
 
 void sigchld_handler(int s)
 {
@@ -151,15 +152,14 @@ void unicast_send(int dest, char* message){
 	sprintf(casted_message,"%d",process_id);
 	strcpy(&(casted_message[1]), message);
 
-	printf("Sent \"%s\" to process %d, system time is ­­­­­­­­­­­­ %s\n", message, dest, getTime());
+//	printf("Sent \"%s\" to process %d, system time is ­­­­­­­­­­­­ %s\n", message, dest, getTime());
 
 	sleep(delay[process_id][dest]);
-	if(send(socketdrive[dest], casted_message, strlen(casted_message),0)== -1) 
+	if(send(socketdrive[dest], casted_message, strlen(casted_message),0) == -1) 
 		perror("send");
 }
 
 void unicast_receive(int source, char*message){
-
 	// if(source != process_id)
 	printf("Received \"%s\" from process %d, system time is ­­­­­­­­­­­­­%s\n", 
 			message, source, getTime());
@@ -187,13 +187,17 @@ void *multicast(void* arg){
 
 void *send_message(void *arg){
 	char command[16];
-	char message[128];
+	char message[3];
 	pthread_t chld_thr;
-	
-	while(scanf("%s %s", command, message) > 0){
-		printf("message_send:%s\n", message);
-		if(strcmp(command, "msend") == 0)
+	while(fgets(command, sizeof(command),stdin) > 0){
+		printf("command:%s\n", command);
+		if(command[0] == 'p'){
+			message[0] = command[4];
+			message[1] = command[6];
+			message[2] = '\0';
+			printf("message:%s\n", message);
 			pthread_create(&chld_thr,NULL,multicast,(void*)message);
+		}
 		else if(strcmp(command, "quit") == 0)
 			break;
 	}
@@ -214,11 +218,10 @@ void *deliverMessage(void *arg){
 	printf("Delivering the message...\n");
 	if(numDelivered == atoi(seqNum)){
 		for(i = 0; i < CurMsgNum;i++){
-			printf("CurMsgNum: %d\n", CurMsgNum);
-			printf("message:%s\n",messages);
+			// printf("CurMsgNum: %d\n", CurMsgNum);
+			// printf("message:%s\n",messages);
 			if(holdBack[i] != NULL && holdBack[i][0] == messages[2]){
 				//put it to the delivery queue
-				printf("reach 224.\n");
 				unicast_receive(atoi(&(holdBack[i][0])),&(holdBack[i][1]));
 				free(holdBack[i]);
 				holdBack[i] = holdBack[CurMsgNum-1];
@@ -228,7 +231,6 @@ void *deliverMessage(void *arg){
 		}
 	}
 	pthread_mutex_unlock(&mutex);
-	printf("reach 237.\n");
 	pthread_exit((void *)0);
 }
 
@@ -244,43 +246,57 @@ void *do_chld(void *arg)
 	pthread_t chld_thr, chld_thr2, chld_thr3;
 	char* seqMessage = malloc(10*sizeof(char));
 
-	pthread_create(&chld_thr, NULL, send_message, NULL);
+	// pthread_create(&chld_thr, NULL, send_message, NULL);
 	while((numbytes = recv(mysocfd, message, MAX_DATA_SIZE-1, 0))>0){
-		printf("received:%s\n", message);
 		/* simulate some processing */
+		message[numbytes] = '\0';
+		printf("Received:%s\n", message);
 		for (i=0;i<1000000;i++);
 
 		if(numbytes > 0){
-			//if the message from sequencer: use a thread to check, and deliver
-			if(process_id != 0 && message[0] == '0' && message[1] == 'o'){
-				printf("The message from the sequencer: %s\n", message);
-				pthread_create(&chld_thr2, NULL, deliverMessage, (void*)message);
-			}
-			//else put the message in the hold back queue
+			//if not sequencer:
+			if(process_id != 0){
+				//if the message from sequencer: use a thread to check, and deliver
+				if(message[0] == '0' && message[1] == 'o'){
+					printf("The message from the sequencer: %s\n", message);
+					pthread_create(&chld_thr2, NULL, deliverMessage, (void*)message);
+				}
+				else{
+					//else put the message in the hold back queue
+					pthread_mutex_lock(&mutex);
+					printf("Push the message into the holdBack queue...\n");
+					holdBack[CurMsgNum] = (char*)malloc(strlen(message)*sizeof(char));
+					strcpy(holdBack[CurMsgNum], message);
+					CurMsgNum ++;
+					pthread_mutex_unlock(&mutex);
+					printf("Finish pushing the message.\n");
+				}
+			}	
 			//if sequencer:
-			else if(process_id == 0 && message[0] != '0' && message[1] != 'o'){
-				//pthread_mutex_lock(&mutex);
-				seqMessage[0] = 'o';
-				strcpy(&(seqMessage[1]), &(message[0]));
-				sprintf(&(seqMessage[2]), "%d", sequenceNum);
-				printf("seqMessage:%s\n", seqMessage);
-				pthread_create(&chld_thr3, NULL, multicast,(void*)seqMessage);
-				sequenceNum ++;
-				unicast_receive((int)message[0]-48, &message[1]);
-				//pthread_mutex_unlock(&mutex);
-				// free(seqMessage);
-			}
-			else if(message[0] != '0' && message[1] != 'o'){
-				pthread_mutex_lock(&mutex);
-				printf("Push the message into the holdBack queue...\n");
-				holdBack[CurMsgNum] = (char*)malloc(strlen(message)*sizeof(char));
-				strcpy(holdBack[CurMsgNum], message);
-				CurMsgNum ++;
-				pthread_mutex_unlock(&mutex);
-				printf("Finish pushing the message.\n");
-				//unicast_receive((int)message[0]-48, &message[1]);
-			}
-				
+			else{
+				//if the message is not an order:
+				if(message[1] != 'o'){
+					//pthread_mutex_lock(&mutex);
+					seqMessage[0] = 'o';
+					strcpy(&(seqMessage[1]), &(message[0]));
+					sprintf(&(seqMessage[2]), "%d", sequenceNum);
+					printf("seqMessage:%s\n", seqMessage);
+					pthread_create(&chld_thr3, NULL, multicast,(void*)seqMessage);
+					sequenceNum ++;
+					unicast_receive((int)message[0]-48, &message[1]);
+					//pthread_mutex_unlock(&mutex);
+				}
+				//if the message is sent from 
+				// else if(message[0] == '0' && message[1] != 'o'){
+				// 	pthread_mutex_lock(&mutex);
+				// 	printf("Push the message into the holdBack queue...\n");
+				// 	holdBack[CurMsgNum] = (char*)malloc(strlen(message)*sizeof(char));
+				// 	strcpy(holdBack[CurMsgNum], message);
+				// 	CurMsgNum ++;
+				// 	pthread_mutex_unlock(&mutex);
+				// 	printf("Finish pushing the message.\n");
+				// }
+			}	
 		}
 	}
 	free(message);
@@ -302,7 +318,7 @@ int main(int argc, char const *argv[]){
 	struct sockaddr_storage their_addr;
 	int numbytes;
 	char buf[MAX_DATA_SIZE];
-	pthread_t chld_thr;
+	pthread_t chld_thr, chld_thr1;
 	pthread_t *tid = malloc( PROC_COUNT* sizeof(pthread_t) );
 	char s[INET6_ADDRSTRLEN];
 	int i;
@@ -379,6 +395,12 @@ int main(int argc, char const *argv[]){
 
 	for(i = 0; i < PROC_COUNT; i++){
 		pthread_join( tid[i], NULL);
+	}
+	pthread_create(&chld_thr1, NULL, send_message, NULL);
+
+	//initialize key variables
+	for(i = 0; i < 26; i++){
+		keys[i] = 0;
 	}
 
 	while(1){
