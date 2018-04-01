@@ -12,15 +12,20 @@
 #include <signal.h>
 #include <pthread.h>
 #include <time.h>
-#include "queue.h"
 
 
 #define BACKLOG 10
-#define MAX_DATA_SIZE 1024 
+#define MAX_DATA_SIZE 128 
 #define FILE_NAME "config.conf"
 #define PROC_COUNT 7
+#define TTLMSGNUM 50
 
 //define global variables 
+
+char* holdBack[TTLMSGNUM];
+int CurMsgNum = 0;
+int numDelivered = 0;
+int sequenceNum = 0;
 
 char PORTS[PROC_COUNT][16];
 char IP[PROC_COUNT][16];
@@ -71,7 +76,7 @@ void read_configure()
 		fscanf(fp, "%d %d", &min_delay, &max_delay);
 		printf("min_delay:%d, max_delay:%d\n",min_delay, max_delay);
 
-		while(i < 4){
+		while(i < PROC_COUNT){
 			fscanf(fp, "%s %s", IP[i], PORTS[i]);
 			printf("Process %d: IP:%s, ",i,IP[i]);
 			printf("PORT:%s\n", PORTS[i]);
@@ -146,24 +151,18 @@ void unicast_send(int dest, char* message){
 	sprintf(casted_message,"%d",process_id);
 	strcpy(&(casted_message[1]), message);
 
-	// sleep(delay[process_id][dest]);
+	printf("Sent \"%s\" to process %d, system time is ­­­­­­­­­­­­ %s\n", message, dest, getTime());
+
+	sleep(delay[process_id][dest]);
 	if(send(socketdrive[dest], casted_message, strlen(casted_message),0)== -1) 
 		perror("send");
-
-	pthread_mutex_lock(&mutex);
-	printf("Sent \"%s\" to process %d, system time is ­­­­­­­­­­­­ %s\n", message, dest, getTime());
-	pthread_mutex_unlock(&mutex);
 }
 
 void unicast_receive(int source, char*message){
 
-	sleep(delay[source][process_id]);
-	pthread_mutex_lock(&mutex);
-	if(source != process_id)
-		printf("Received \"%s\" from process %d, system time is ­­­­­­­­­­­­­%s\n", 
+	// if(source != process_id)
+	printf("Received \"%s\" from process %d, system time is ­­­­­­­­­­­­­%s\n", 
 			message, source, getTime());
-	pthread_mutex_unlock(&mutex);
-
 }
 
 void *unicast(void *arg)
@@ -173,59 +172,119 @@ void *unicast(void *arg)
 	pthread_exit((void *)0);
 }
 
-void multicast(char* message){
+void *multicast(void* arg){
+	char* message = (char*)arg;
 	pthread_t *tid = malloc(PROC_COUNT* sizeof(pthread_t));
 	strcpy(multi_message, message);
 	int i = 0;
 	for(i = 0; i < PROC_COUNT;i++){
 		pthread_create(&tid[i], NULL, unicast,(void*)i);
 	}
-
 	free(tid);
-}
 
-void TOcast(char* message){
-
+	pthread_exit((void *)0);
 }
 
 void *send_message(void *arg){
 	char command[16];
-	char message[512];
+	char message[128];
+	pthread_t chld_thr;
 	
 	while(scanf("%s %s", command, message) > 0){
-		printf("message:%s\n", message);
+		printf("message_send:%s\n", message);
 		if(strcmp(command, "msend") == 0)
-			multicast(message);
+			pthread_create(&chld_thr,NULL,multicast,(void*)message);
 		else if(strcmp(command, "quit") == 0)
 			break;
 	}
 	pthread_exit((void *)0);
 }
 
+void *deliverMessage(void *arg){
+	char* messages = (char*)arg;
+	int i;
+	//iterate through the holdback to check the coresponding message
+	char seqNum[64];
+	//put the message into deliver queue
+	strcpy(seqNum, &(messages[3]));
+	while(numDelivered < atoi(seqNum)){
+		//wait for the numDelivered to be the same in seqNum
+	}
+	pthread_mutex_lock(&mutex);
+	printf("Delivering the message...\n");
+	if(numDelivered == atoi(seqNum)){
+		for(i = 0; i < CurMsgNum;i++){
+			printf("CurMsgNum: %d\n", CurMsgNum);
+			printf("message:%s\n",messages);
+			if(holdBack[i] != NULL && holdBack[i][0] == messages[2]){
+				//put it to the delivery queue
+				printf("reach 224.\n");
+				unicast_receive(atoi(&(holdBack[i][0])),&(holdBack[i][1]));
+				free(holdBack[i]);
+				holdBack[i] = holdBack[CurMsgNum-1];
+				CurMsgNum --;
+				numDelivered = atoi(seqNum)+1;
+			}
+		}
+	}
+	pthread_mutex_unlock(&mutex);
+	printf("reach 237.\n");
+	pthread_exit((void *)0);
+}
+
 void *do_chld(void *arg)
 {
 	int mysocfd = (int) arg;
-	char message[MAX_DATA_SIZE];
+	char* message = malloc(MAX_DATA_SIZE*sizeof(char));
 	int i;
 	int source;
 	int numbytes;
 	char act[10];
 	int dest;
-	pthread_t chld_thr;
+	pthread_t chld_thr, chld_thr2, chld_thr3;
+	char* seqMessage = malloc(10*sizeof(char));
 
 	pthread_create(&chld_thr, NULL, send_message, NULL);
+	while((numbytes = recv(mysocfd, message, MAX_DATA_SIZE-1, 0))>0){
+		printf("received:%s\n", message);
+		/* simulate some processing */
+		for (i=0;i<1000000;i++);
 
-	if((numbytes = recv(mysocfd, message, MAX_DATA_SIZE-1, 0)) == -1){
-				perror("recv");
-				exit(1);
+		if(numbytes > 0){
+			//if the message from sequencer: use a thread to check, and deliver
+			if(process_id != 0 && message[0] == '0' && message[1] == 'o'){
+				printf("The message from the sequencer: %s\n", message);
+				pthread_create(&chld_thr2, NULL, deliverMessage, (void*)message);
+			}
+			//else put the message in the hold back queue
+			//if sequencer:
+			else if(process_id == 0 && message[0] != '0' && message[1] != 'o'){
+				//pthread_mutex_lock(&mutex);
+				seqMessage[0] = 'o';
+				strcpy(&(seqMessage[1]), &(message[0]));
+				sprintf(&(seqMessage[2]), "%d", sequenceNum);
+				printf("seqMessage:%s\n", seqMessage);
+				pthread_create(&chld_thr3, NULL, multicast,(void*)seqMessage);
+				sequenceNum ++;
+				unicast_receive((int)message[0]-48, &message[1]);
+				//pthread_mutex_unlock(&mutex);
+				// free(seqMessage);
+			}
+			else if(message[0] != '0' && message[1] != 'o'){
+				pthread_mutex_lock(&mutex);
+				printf("Push the message into the holdBack queue...\n");
+				holdBack[CurMsgNum] = (char*)malloc(strlen(message)*sizeof(char));
+				strcpy(holdBack[CurMsgNum], message);
+				CurMsgNum ++;
+				pthread_mutex_unlock(&mutex);
+				printf("Finish pushing the message.\n");
+				//unicast_receive((int)message[0]-48, &message[1]);
+			}
+				
+		}
 	}
-
-	/* simulate some processing */
-	for (i=0;i<1000000;i++);
-
-	if(numbytes > 0)
-		unicast_receive((int)message[0]-48, &message[1]);
-
+	free(message);
+	free(seqMessage);
 	/* close the socket and exit this thread */
 	close(mysocfd);
 	pthread_exit((void *)0);
