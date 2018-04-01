@@ -152,8 +152,6 @@ void unicast_send(int dest, char* message){
 	sprintf(casted_message,"%d",process_id);
 	strcpy(&(casted_message[1]), message);
 
-//	printf("Sent \"%s\" to process %d, system time is ­­­­­­­­­­­­ %s\n", message, dest, getTime());
-
 	sleep(delay[process_id][dest]);
 	if(send(socketdrive[dest], casted_message, strlen(casted_message),0) == -1) 
 		perror("send");
@@ -161,8 +159,17 @@ void unicast_send(int dest, char* message){
 
 void unicast_receive(int source, char*message){
 	// if(source != process_id)
-	printf("Received \"%s\" from process %d, system time is ­­­­­­­­­­­­­%s\n", 
-			message, source, getTime());
+	//if its a write command, write value into local
+	char ack_msg[8];
+	if(message[0] == 'p'){
+		printf("Received \"%s\" from process %d, system time is ­­­­­­­­­­­­­%s\n", 
+			message, source, getTime());		
+		keys[(int)message[1]-97] = atoi(&(message[2]));
+		//Return Ack() indicating completion of the Write(X,v) operation
+		strcpy(ack_msg,"Ack:");
+		strcat(ack_msg, message);
+		unicast_send(source, ack_msg);
+	} 
 }
 
 void *unicast(void *arg)
@@ -187,15 +194,14 @@ void *multicast(void* arg){
 
 void *send_message(void *arg){
 	char command[16];
-	char message[3];
+	char message[4];
 	pthread_t chld_thr;
 	while(fgets(command, sizeof(command),stdin) > 0){
-		printf("command:%s\n", command);
 		if(command[0] == 'p'){
-			message[0] = command[4];
-			message[1] = command[6];
-			message[2] = '\0';
-			printf("message:%s\n", message);
+			message[0] = 'p';
+			message[1] = command[4];
+			message[2] = command[6];
+			message[3] = '\0';
 			pthread_create(&chld_thr,NULL,multicast,(void*)message);
 		}
 		else if(strcmp(command, "quit") == 0)
@@ -208,14 +214,18 @@ void *deliverMessage(void *arg){
 	char* messages = (char*)arg;
 	int i;
 	//iterate through the holdback to check the coresponding message
-	char seqNum[64];
+	char seqNum[16];
 	//put the message into deliver queue
+	printf("before seqNUM:%s\n", messages);
 	strcpy(seqNum, &(messages[3]));
+	printf("seqNum: %s\n", seqNum);
 	while(numDelivered < atoi(seqNum)){
 		//wait for the numDelivered to be the same in seqNum
 	}
-	pthread_mutex_lock(&mutex);
+	
 	printf("Delivering the message...\n");
+
+	pthread_mutex_lock(&mutex);
 	if(numDelivered == atoi(seqNum)){
 		for(i = 0; i < CurMsgNum;i++){
 			// printf("CurMsgNum: %d\n", CurMsgNum);
@@ -231,6 +241,7 @@ void *deliverMessage(void *arg){
 		}
 	}
 	pthread_mutex_unlock(&mutex);
+	free(messages);
 	pthread_exit((void *)0);
 }
 
@@ -238,6 +249,8 @@ void *do_chld(void *arg)
 {
 	int mysocfd = (int) arg;
 	char* message = malloc(MAX_DATA_SIZE*sizeof(char));
+	message[0] = '\0';	
+	char* t_message;
 	int i;
 	int source;
 	int numbytes;
@@ -251,6 +264,9 @@ void *do_chld(void *arg)
 		/* simulate some processing */
 		message[numbytes] = '\0';
 		printf("Received:%s\n", message);
+		t_message = malloc(MAX_DATA_SIZE*sizeof(char));
+		strcpy(t_message, message);
+		printf("t_message:%s\n", t_message);
 		for (i=0;i<1000000;i++);
 
 		if(numbytes > 0){
@@ -258,10 +274,13 @@ void *do_chld(void *arg)
 			if(process_id != 0){
 				//if the message from sequencer: use a thread to check, and deliver
 				if(message[0] == '0' && message[1] == 'o'){
-					printf("The message from the sequencer: %s\n", message);
-					pthread_create(&chld_thr2, NULL, deliverMessage, (void*)message);
+					printf("The message from the sequencer: %s\n", t_message);
+					pthread_create(&chld_thr2, NULL, deliverMessage, (void*)t_message);
 				}
-				else{
+				else if(message[1] == 'A'){
+					printf("process %c completed:%s\n", message[0], &(message[5]));
+				}
+				else if(message[1] == 'p'){
 					//else put the message in the hold back queue
 					pthread_mutex_lock(&mutex);
 					printf("Push the message into the holdBack queue...\n");
@@ -275,7 +294,7 @@ void *do_chld(void *arg)
 			//if sequencer:
 			else{
 				//if the message is not an order:
-				if(message[1] != 'o'){
+				if(message[1] =='p'){
 					//pthread_mutex_lock(&mutex);
 					seqMessage[0] = 'o';
 					strcpy(&(seqMessage[1]), &(message[0]));
@@ -286,18 +305,13 @@ void *do_chld(void *arg)
 					unicast_receive((int)message[0]-48, &message[1]);
 					//pthread_mutex_unlock(&mutex);
 				}
-				//if the message is sent from 
-				// else if(message[0] == '0' && message[1] != 'o'){
-				// 	pthread_mutex_lock(&mutex);
-				// 	printf("Push the message into the holdBack queue...\n");
-				// 	holdBack[CurMsgNum] = (char*)malloc(strlen(message)*sizeof(char));
-				// 	strcpy(holdBack[CurMsgNum], message);
-				// 	CurMsgNum ++;
-				// 	pthread_mutex_unlock(&mutex);
-				// 	printf("Finish pushing the message.\n");
-				// }
-			}	
+				else if(message[1] == 'A'){
+					printf("process %c completed:%s\n", message[0], &(message[5]));
+				}
+			}
 		}
+		message[0] = '\0';
+
 	}
 	free(message);
 	free(seqMessage);
