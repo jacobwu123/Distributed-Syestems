@@ -351,18 +351,17 @@ void *do_client(void *arg)
 
 	while((numbytes = recv(mysocfd, message, MAX_DATA_SIZE-1, 0))>0){
 		/* simulate some processing */
-		printf("receive:%s\n", message);
+		printf("number of byts: %d, receive:%s\n",numbytes, message);
 		message[numbytes] = '\0';
 		t_message = malloc(MAX_DATA_SIZE*sizeof(char));
 		strcpy(t_message, message);
-
+		free(message);
 		token = strtok(t_message, " ");
-		// while (token != NULL)
-  //   	{
-  //       	printf("%s\n", token);
-  //       	token = strtok(NULL, " ");
-  //   	}
-		if(numbytes > 0){
+
+		while(token!=NULL){
+			printf("%s\n", token);
+			t_message = malloc(MAX_DATA_SIZE*sizeof(char));
+			strcpy(t_message, token);
 			//if not sequencer:
 			if(process_id != 0){
 				//if the message from sequencer: use a thread to check, and deliver
@@ -370,7 +369,7 @@ void *do_client(void *arg)
 					pthread_create(&chld_thr2, NULL, deliverMessage, (void*)t_message);
 				}
 				else if(t_message[1] == 'A'){
-					printf("Ack: process %c completed:%s\n", message[0], &(message[5]));
+					printf("Ack: process %c completed:%s\n", t_message[0], &(t_message[5]));
 				}
 				else if(t_message[1] == 'p' || t_message[1] == 'g'){
 					//else put the message in the hold back queue
@@ -388,10 +387,11 @@ void *do_client(void *arg)
 				//if the message is not an order:
 				if(t_message[1] =='p' || t_message[1] == 'g'){
 					//pthread_mutex_lock(&mutex);
-					receive_message((int)message[0]-48, &(t_message[1]));
+					receive_message((int)t_message[0]-48, &(t_message[1]));
 					seqMessage[0] = 'o';
 					strcpy(&(seqMessage[1]), &(t_message[0]));
 					sprintf(&(seqMessage[2]), "%d", sequenceNum);
+					printf("seqMessage:%s\n", seqMessage);
 					pthread_create(&chld_thr3, NULL, multicast,(void*)seqMessage);
 					sequenceNum ++;
 					//pthread_mutex_unlock(&mutex);
@@ -400,8 +400,9 @@ void *do_client(void *arg)
 					printf("Ack: process %c completed:%s\n", t_message[0], &(t_message[5]));
 				}
 			}
+			token = strtok(NULL, " ");
+			message = malloc(MAX_DATA_SIZE*sizeof(char));
 		}
-		message[0] = '\0';
 	}
 	free(message);
 	free(seqMessage);
