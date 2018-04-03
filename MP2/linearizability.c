@@ -229,7 +229,6 @@ void logToFile(int id, char op, char key, unsigned time, int re, char val){
 		strcpy(type,"resp");
 	}
 
-
 	strcpy(fileName,"log");
 	fileName[3] = (char)(process_id + 48);
 	strcat(fileName, ".txt");
@@ -262,9 +261,12 @@ void receive_message(int source, char*message){
 		printf("Setting %c = %d...\n", message[1], atoi(&(message[2])));
 		keys[(int)message[1]-97] = atoi(&(message[2]));
 		//Return Ack() indicating completion of the Write(X,v) operation
-		strcpy(ack_msg,"Ack:");
-		strcat(ack_msg, message);
-		unicast_send(source, ack_msg);
+		//only if its your own write operation
+		if(source == process_id)
+		{	strcpy(ack_msg,"Ack:");
+			strcat(ack_msg, message);
+			unicast_send(source, ack_msg);
+		}
 	}
 	else if(message[0] == 'g'){
 		/*
@@ -432,7 +434,10 @@ void *do_client(void *arg)
 					pthread_create(&chld_thr2, NULL, deliverMessage, (void*)t_message);
 				}
 				else if(t_message[1] == 'A'){
-					printf("Ack: process %c completed:%s\n", t_message[0], &(t_message[5]));
+					if((int)t_message[0] == process_id + 48){
+						printf("Ack: process %c completed:%s\n", t_message[0], &(t_message[5]));
+					}
+					
 				}
 				else if(t_message[1] == 'p' || t_message[1] == 'g'){
 					//else put the message in the hold back queue
@@ -466,7 +471,10 @@ void *do_client(void *arg)
 
 				}
 				else if(t_message[1] == 'A'){
-					printf("Ack: process %c completed:%s\n", t_message[0], &(t_message[5]));
+					if((int)t_message[0] == process_id + 48)
+					{
+						printf("Ack: process %c completed:%s\n", t_message[0], &(t_message[5]));
+					}
 				}
 			}
 			token = strtok(NULL, " ");
