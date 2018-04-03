@@ -12,6 +12,7 @@
 #include <signal.h>
 #include <pthread.h>
 #include <time.h>
+#include "queue.h"
 
 
 #define BACKLOG 10
@@ -33,8 +34,10 @@ int socketdrive[PROC_COUNT];
 int process_id;
 int delay[PROC_COUNT][PROC_COUNT];
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t seq = PTHREAD_MUTEX_INITIALIZER;
+
 volatile int send_flag = 0;
-char multi_message[512];
+//char multi_message[512];
 
 int keys[26];
 
@@ -80,8 +83,8 @@ void read_configure()
 
 		while(i < PROC_COUNT){
 			fscanf(fp, "%s %s", IP[i], PORTS[i]);
-			printf("Process %d: IP:%s, ",i,IP[i]);
-			printf("PORT:%s\n", PORTS[i]);
+			// printf("Process %d: IP:%s, ",i,IP[i]);
+			// printf("PORT:%s\n", PORTS[i]);
 			i++;
 		}
 
@@ -126,7 +129,7 @@ void *setupConnection(void* arg)
 		pthread_exit((void *)0);
 	}
 
-	sleep(5);//wait for other processes to open
+	sleep(8);//wait for other processes to open
 	sockfd = getServer(servinfo, &p);
 	if(p == NULL){
 		fprintf(stderr, "client: fail to connect\n");
@@ -146,7 +149,6 @@ char* getTime(){
   	return asctime(timeinfo);
 }
 
-
 /*
 	unicast_send:
 	input:
@@ -165,8 +167,40 @@ void unicast_send(int dest, char* message){
 	strcpy(&(casted_message[2]), message);
 
 	sleep(delay_per_send);
+	printf("message sent:%s\n", casted_message);
 	if(send(socketdrive[dest], casted_message, strlen(casted_message),0) == -1) 
 		return;
+	
+}
+
+/*
+	unicast:
+	a thread wrapper of unicast_send(dest, message)
+*/
+void *unicast(void *arg)
+{
+	char* message = (char*)arg;
+	unicast_send(atoi(&(message[0])), &(message[1]));
+	pthread_exit((void *)0);
+}
+
+void *multicast(void* arg){
+	char* message = (char*)arg;
+	char* casted_message;
+	pthread_t *tid = malloc(PROC_COUNT* sizeof(pthread_t));
+//	strcpy(multi_message, message);
+	int i = 0;
+	printf("multicast message:%s\n", message);
+	for(i = 0; i < PROC_COUNT;i++){
+		if(message[0] == 'o' && i == 0)
+			continue;
+		casted_message = malloc((strlen(message)+2)*sizeof(char));
+		sprintf(casted_message,"%d",i);
+		strcpy(&(casted_message[1]), message);
+		pthread_create(&tid[i], NULL, unicast,(void*)casted_message);
+	}
+	free(tid);
+	pthread_exit((void *)0);
 }
 
 /*
@@ -184,6 +218,7 @@ void receive_message(int source, char*message){
 	//if its a write command, write value into local
 	char ack_msg[9];
 	if(message[0] == 'p'){		
+		printf("Setting %c = %d...\n", message[1], atoi(&(message[2])));
 		keys[(int)message[1]-97] = atoi(&(message[2]));
 		//Return Ack() indicating completion of the Write(X,v) operation
 		strcpy(ack_msg,"Ack:");
@@ -205,40 +240,13 @@ void receive_message(int source, char*message){
 		}
 	} 
 }
-
-/*
-	unicast:
-	a thread wrapper of unicast_send(dest, message)
-*/
-void *unicast(void *arg)
-{
-	int dest = (int) arg;
-	unicast_send(dest, multi_message);
-	pthread_exit((void *)0);
-}
-
-void *multicast(void* arg){
-	char* message = (char*)arg;
-	pthread_t *tid = malloc(PROC_COUNT* sizeof(pthread_t));
-	strcpy(multi_message, message);
-	int i = 0;
-	for(i = 0; i < PROC_COUNT;i++){
-		if(multi_message[0] == 'o' && i == 0)
-			continue;
-		pthread_create(&tid[i], NULL, unicast,(void*)i);
-	}
-	free(tid);
-	pthread_exit((void *)0);
-}
-
 void *dump(void* arg){
 	int i;
 	char c = 'a';
 	pthread_mutex_lock(&mutex);
 	for(i = 0; i < 26;i++){
-		printf("%c:%d ", (char)((int)c+i),keys[i]);
+		printf("%c:%d\n", (char)((int)c+i),keys[i]);
 	}
-	printf("\n");
 	pthread_mutex_unlock(&mutex);
 	pthread_exit((void *)0);
 }
@@ -258,8 +266,9 @@ void *dump(void* arg){
 */
 void *stdin_read(void *arg){
 	char command[16];
-	char message[4];
+	char* message= malloc(4*sizeof(char));
 	pthread_t chld_thr;
+	int i;
 
 	while(fgets(command, sizeof(command), stdin) > 0){
 		command[strlen(command)-1] = '\0';
@@ -287,8 +296,15 @@ void *stdin_read(void *arg){
 			usleep(atoi(message)*1000);
 			printf("waking up...\n");
 		}
-		else if(strcmp(command, "quit") == 0)
-			break;
+		else if(command[0] == 'q') 
+		{
+			//print out the hold back queue
+			for(i = 0; i < CurMsgNum;i++){
+				if(holdBack[i]!=NULL){
+					printf("%s\n", holdBack[i]);
+				}
+			}
+		}
 	}
 	pthread_exit((void *)0);
 }
@@ -334,6 +350,10 @@ void *deliverMessage(void *arg){
 	pthread_exit((void *)0);
 }
 
+/*
+	do_client:
+		client thread for receiving
+*/
 void *do_client(void *arg)
 {
 	int mysocfd = (int) arg;
@@ -346,24 +366,23 @@ void *do_client(void *arg)
 	char act[10];
 	int dest;
 	pthread_t chld_thr, chld_thr2, chld_thr3;
-	char* seqMessage = malloc(10*sizeof(char));
+	char* seqMessage;
 	char *token;
 
 	while((numbytes = recv(mysocfd, message, MAX_DATA_SIZE-1, 0))>0){
 		/* simulate some processing */
-		printf("number of byts: %d, receive:%s\n",numbytes, message);
 		message[numbytes] = '\0';
 		t_message = malloc(MAX_DATA_SIZE*sizeof(char));
 		strcpy(t_message, message);
 		free(message);
 		token = strtok(t_message, " ");
-
+		printf("receive:%s\n", token);
 		while(token!=NULL){
-			printf("%s\n", token);
 			t_message = malloc(MAX_DATA_SIZE*sizeof(char));
 			strcpy(t_message, token);
 			//if not sequencer:
 			if(process_id != 0){
+				printf("non-seq receive:%s\n", t_message);
 				//if the message from sequencer: use a thread to check, and deliver
 				if(t_message[0] == '0' && t_message[1] == 'o'){
 					pthread_create(&chld_thr2, NULL, deliverMessage, (void*)t_message);
@@ -384,17 +403,22 @@ void *do_client(void *arg)
 			}	
 			//if sequencer:
 			else{
+				printf("seq receive:%s\n", t_message);
 				//if the message is not an order:
 				if(t_message[1] =='p' || t_message[1] == 'g'){
 					//pthread_mutex_lock(&mutex);
-					receive_message((int)t_message[0]-48, &(t_message[1]));
+					seqMessage = malloc(10*sizeof(char));
 					seqMessage[0] = 'o';
 					strcpy(&(seqMessage[1]), &(t_message[0]));
 					sprintf(&(seqMessage[2]), "%d", sequenceNum);
-					printf("seqMessage:%s\n", seqMessage);
 					pthread_create(&chld_thr3, NULL, multicast,(void*)seqMessage);
+					pthread_mutex_lock(&seq);
 					sequenceNum ++;
-					//pthread_mutex_unlock(&mutex);
+					pthread_mutex_unlock(&seq);
+					pthread_mutex_lock(&mutex);
+					receive_message((int)t_message[0]-48, &(t_message[1]));
+					pthread_mutex_unlock(&mutex);
+
 				}
 				else if(t_message[1] == 'A'){
 					printf("Ack: process %c completed:%s\n", t_message[0], &(t_message[5]));
@@ -409,6 +433,16 @@ void *do_client(void *arg)
 	/* close the socket and exit this thread */
 	close(mysocfd);
 	pthread_exit((void *)0);
+}
+
+void creatLogFile(){
+	char fileName[9];
+
+	strcpy(ack_msg,"log");
+	fileName[3] = (char)(process_id + 48);
+	strcat(fileName, ".txt");
+	printf("File name is:%s\n", fileName);
+	fopen(fileName, "w");
 }
 
 
@@ -508,6 +542,8 @@ int main(int argc, char const *argv[]){
 	for(i = 0; i < 26; i++){
 		keys[i] = 0;
 	}
+
+	creatLogFile();
 
 	while(1){
 		sin_size = sizeof their_addr;
