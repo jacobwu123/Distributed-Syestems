@@ -37,6 +37,7 @@ int delay[PROC_COUNT][PROC_COUNT];
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t seq = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t file_lock = PTHREAD_MUTEX_INITIALIZER;
+pthread_mutex_t send_lock = PTHREAD_MUTEX_INITIALIZER;
 
 
 int keys[26];
@@ -189,6 +190,8 @@ void *multicast(void* arg){
 	pthread_t *tid = malloc(PROC_COUNT* sizeof(pthread_t));
 //	strcpy(multi_message, message);
 	int i = 0;
+	pthread_mutex_lock(&send_lock);
+	printf("--LOCKED--\n");
 	for(i = 0; i < PROC_COUNT;i++){
 		if(message[0] == 'o' && i == 0)
 			continue;
@@ -198,6 +201,8 @@ void *multicast(void* arg){
 		pthread_create(&tid[i], NULL, unicast,(void*)casted_message);
 	}
 	free(tid);
+	pthread_mutex_unlock(&send_lock);
+	printf("--UNLOCKED--\n");
 	pthread_exit((void *)0);
 }
 
