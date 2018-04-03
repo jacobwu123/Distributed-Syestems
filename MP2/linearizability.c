@@ -32,11 +32,12 @@ char IP[PROC_COUNT][16];
 int socketdrive[PROC_COUNT];
 int process_id;
 int delay[PROC_COUNT][PROC_COUNT];
+
+//mutex:
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t seq = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t file_lock = PTHREAD_MUTEX_INITIALIZER;
-volatile int send_flag = 0;
-//char multi_message[512];
+
 
 int keys[26];
 
@@ -166,7 +167,6 @@ void unicast_send(int dest, char* message){
 	strcpy(&(casted_message[2]), message);
 
 	sleep(delay_per_send);
-	printf("message sent:%s\n", casted_message);
 	if(send(socketdrive[dest], casted_message, strlen(casted_message),0) == -1) 
 		return;
 	
@@ -189,7 +189,6 @@ void *multicast(void* arg){
 	pthread_t *tid = malloc(PROC_COUNT* sizeof(pthread_t));
 //	strcpy(multi_message, message);
 	int i = 0;
-	printf("multicast message:%s\n", message);
 	for(i = 0; i < PROC_COUNT;i++){
 		if(message[0] == 'o' && i == 0)
 			continue;
@@ -233,8 +232,6 @@ void logToFile(int id, char op, char key, unsigned time, int re, char val){
 	fileName[3] = (char)(process_id + 48);
 	strcat(fileName, ".txt");
 
-	printf("fileName:%s\n", fileName);
-
 	pthread_mutex_lock(&file_lock);
 	fp = fopen(fileName, "a+");
 	fprintf(fp, "%s,%d,%s,%c,%u,%s,%c\n", "555",id, operation,key,time,type,val);
@@ -263,8 +260,12 @@ void receive_message(int source, char*message){
 		//Return Ack() indicating completion of the Write(X,v) operation
 		//only if its your own write operation
 		if(source == process_id)
-		{	strcpy(ack_msg,"Ack:");
+		{	
+			strcpy(ack_msg,"Ack:");
 			strcat(ack_msg, message);
+			ack_msg[6] = '=';
+			sprintf(&(ack_msg[7]), "%d", keys[(int)message[1]-97]);
+			ack_msg[8] = '\0';
 			unicast_send(source, ack_msg);
 		}
 	}
@@ -273,7 +274,8 @@ void receive_message(int source, char*message){
 		When totally-ordered multicast of Read(X) initiated by pi is delivered to process pi, 
 		read the value of local copy of X at pi.
 		*/
-		if(source == process_id){
+		if(source == process_id)
+		{
 			strcpy(ack_msg,"Ack:");
 			strcat(ack_msg, message);
 			ack_msg[6] = '=';
@@ -422,19 +424,18 @@ void *do_client(void *arg)
 		strcpy(t_message, message);
 		free(message);
 		token = strtok(t_message, " ");
-		printf("receive:%s\n", token);
 		while(token!=NULL){
 			t_message = malloc(MAX_DATA_SIZE*sizeof(char));
 			strcpy(t_message, token);
 			//if not sequencer:
 			if(process_id != 0){
-				printf("non-seq receive:%s\n", t_message);
 				//if the message from sequencer: use a thread to check, and deliver
 				if(t_message[0] == '0' && t_message[1] == 'o'){
 					pthread_create(&chld_thr2, NULL, deliverMessage, (void*)t_message);
 				}
 				else if(t_message[1] == 'A'){
 					if((int)t_message[0] == process_id + 48){
+						logToFile(process_id, t_message[5], t_message[6],(unsigned)time(NULL),1,t_message[8]);
 						printf("Ack: process %c completed:%s\n", t_message[0], &(t_message[5]));
 					}
 					
@@ -452,7 +453,6 @@ void *do_client(void *arg)
 			}	
 			//if sequencer:
 			else{
-				printf("seq receive:%s\n", t_message);
 				//if the message is not an order:
 				if(t_message[1] =='p' || t_message[1] == 'g'){
 					//pthread_mutex_lock(&mutex);
@@ -473,6 +473,7 @@ void *do_client(void *arg)
 				else if(t_message[1] == 'A'){
 					if((int)t_message[0] == process_id + 48)
 					{
+						logToFile(process_id, t_message[5], t_message[6],(unsigned)time(NULL),1,t_message[8]);
 						printf("Ack: process %c completed:%s\n", t_message[0], &(t_message[5]));
 					}
 				}
@@ -498,6 +499,7 @@ void creatLogFile(){
 	printf("File name is:%s\n", fileName);
 	fp = fopen(fileName, "w");
 	fclose(fp);
+	printf("Create File: %s\n", fileName);
 }
 
 
