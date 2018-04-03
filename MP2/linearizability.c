@@ -12,7 +12,6 @@
 #include <signal.h>
 #include <pthread.h>
 #include <time.h>
-#include "queue.h"
 
 
 #define BACKLOG 10
@@ -35,7 +34,7 @@ int process_id;
 int delay[PROC_COUNT][PROC_COUNT];
 pthread_mutex_t mutex = PTHREAD_MUTEX_INITIALIZER;
 pthread_mutex_t seq = PTHREAD_MUTEX_INITIALIZER;
-
+pthread_mutex_t file_lock = PTHREAD_MUTEX_INITIALIZER;
 volatile int send_flag = 0;
 //char multi_message[512];
 
@@ -204,6 +203,48 @@ void *multicast(void* arg){
 }
 
 /*
+	logToFile:
+		inputs:
+				id: Integer identifier of the client that made the request
+				op: get or put (depending on the operation performed)
+
+*/
+
+void logToFile(int id, char op, char key, unsigned time, int re, char val){
+	char message[64];
+	FILE* fp;
+	char fileName[16];	
+	char type[5];
+	char operation[4];
+
+	if(op == 'p')
+		strcpy(operation,"put");
+	else
+		strcpy(operation, "get");
+
+	if(re == 0){
+		strcpy(type,"req");
+	}
+	else{
+		strcpy(type,"resp");
+	}
+
+
+	strcpy(fileName,"log");
+	fileName[3] = (char)(process_id + 48);
+	strcat(fileName, ".txt");
+
+	printf("fileName:%s\n", fileName);
+
+	pthread_mutex_lock(&file_lock);
+	fp = fopen(fileName, "a+");
+	fprintf(fp, "%s,%d,%s,%c,%u,%s,%c\n", "555",id, operation,key,time,type,val);
+	fclose(fp);
+	pthread_mutex_unlock(&file_lock);
+
+}
+
+/*
 	receive_message:
 	input:
 		int source: message source
@@ -240,6 +281,7 @@ void receive_message(int source, char*message){
 		}
 	} 
 }
+
 void *dump(void* arg){
 	int i;
 	char c = 'a';
@@ -278,6 +320,7 @@ void *stdin_read(void *arg){
 			message[1] = command[4];
 			message[2] = command[6];
 			message[3] = '\0';
+			logToFile(process_id, 'p', command[4], (unsigned)time(NULL), 0, command[6]);
 			pthread_create(&chld_thr,NULL,multicast,(void*)message);
 		}
 		else if(command[0] == 'g'){
@@ -285,6 +328,7 @@ void *stdin_read(void *arg){
 			message[0] = 'g';
 			message[1] = command[4];
 			message[2] = '\0';
+			logToFile(process_id, 'g', command[4], (unsigned)time(NULL), 0, '\0');
 			pthread_create(&chld_thr,NULL,multicast,(void*)message);
 		}
 		else if(command[0] == 'd' && command[1] == 'u'){
@@ -415,6 +459,7 @@ void *do_client(void *arg)
 					pthread_mutex_lock(&seq);
 					sequenceNum ++;
 					pthread_mutex_unlock(&seq);
+
 					pthread_mutex_lock(&mutex);
 					receive_message((int)t_message[0]-48, &(t_message[1]));
 					pthread_mutex_unlock(&mutex);
@@ -437,12 +482,14 @@ void *do_client(void *arg)
 
 void creatLogFile(){
 	char fileName[9];
+	FILE *fp;
 
-	strcpy(ack_msg,"log");
+	strcpy(fileName,"log");
 	fileName[3] = (char)(process_id + 48);
 	strcat(fileName, ".txt");
 	printf("File name is:%s\n", fileName);
-	fopen(fileName, "w");
+	fp = fopen(fileName, "w");
+	fclose(fp);
 }
 
 
