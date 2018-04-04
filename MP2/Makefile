@@ -8,7 +8,10 @@ CC_ARGS=${CC_OPTS} ${CC_LIBS} ${CC_DEFINES} ${CC_INCLUDES}
 # clean is not a file
 .PHONY=clean
 
-process: linearizability.c
+eventual: main.c
+	@${CC} ${CC_ARGS} -o eventual main.c -lpthread
+
+linearizability: linearizability.c
 	@${CC} ${CC_ARGS} -o linearizability linearizability.c -lpthread
 
 clean:
